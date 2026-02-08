@@ -1,0 +1,21 @@
+              Strategy  Train Accuracy  Train Loss  Test Accuracy  Test Loss  Val Accuracy  Val Loss
+0              FC Only        0.940567    0.152103       0.871795   0.337326           1.0  0.171374
+1     Full Fine-Tuning        0.993290    0.016250       0.937500   0.302586           1.0  0.014335
+2  Partial Fine-Tuning        0.997316    0.007480       0.923077   0.416340           1.0  0.057114
+
+Run: default_rotation10Not20_resnet50_adamw_wdback1e-05_wdhead0.0001_20260205-163622
+Params:
+- cfg_name: default
+- run_tag: rotation10Not20
+- timestamp: 20260205-163622
+- optimizer: adamw
+- weight_decay_backbone: 1e-05
+- weight_decay_head: 0.0001
+- lr_frozen: 0.001
+- lr_full: 0.0001
+- lr_partial: 0.0001
+- epochs_frozen: 10
+- epochs_full: 15
+- epochs_partial: 15
+- batch_size: 32
+- num_workers: 8
