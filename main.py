@@ -8,11 +8,11 @@ import numpy as np
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from sklearn.utils.class_weight import compute_class_weight
-import warnings
+#import warnings
 import time
 
 def main():
-    warnings.filterwarnings('ignore')
+    #warnings.filterwarnings('ignore')
     import torch
     torch.backends.cudnn.benchmark = True
     from torchvision import models
@@ -21,11 +21,7 @@ def main():
     from ChestXrayDataset import ChestXrayDataset
     from helper import count_images, report, write_classification_report, compare_training_strategies
 
-    print("Cuda available: ", torch.cuda.is_available())
-    print("Device count: ", torch.cuda.device_count())
-    print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "no cuda")
-    print("torch.__version__:", torch.__version__)
-    print(torch.version.cuda)
+    check_for_cuda(torch)
 
     base_dir = ".\\datasets"
     train_dir = os.path.join(base_dir, "train")
@@ -36,7 +32,7 @@ def main():
     args = parser.parse_args()
 
     cfg_name, cfg = get_run_hp_configuration(args)
-    
+
     optimizer_name = cfg["optimizer"]
     use_adamw = optimizer_name.lower() == "adamw"
     if use_adamw:
@@ -56,11 +52,16 @@ def main():
         f"{timestamp}"
     )
 
+    ARCH_FINAL_HEAD = {
+        "resnet": "fc",
+        "densenet": "classifier",
+        "efficientnet": "classifier.1",
+        "vit": "heads.head",
+    }
+    if cfg.get("arch") not in ARCH_FINAL_HEAD:
+        raise ValueError(f"Unsupported arch '{cfg.get('arch')}'.")
+
     model_name = cfg["model_name"]
-    match = re.fullmatch(r"resnet(\d+)", model_name)
-    if not match:
-        raise ValueError(f"Unsupported model_name '{model_name}'. Expected like 'resnet50'.")
-    resnet_size = int(match.group(1))
 
     class_names = sorted([d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))])
     class_to_idx = {name: i for i, name in enumerate(class_names)}
@@ -91,6 +92,7 @@ def main():
     batch_size = cfg["batch_size"]
     num_workers = cfg["num_workers"]
     pin_memory = cfg.get("pin_memory", True)
+    freeze_norm_layer = cfg.get("freeze_norm_layer", False)
 
     train_dataset = ChestXrayDataset(train_dir, transform=train_transform, class_to_idx=class_to_idx, strict=True)
     val_dataset   = ChestXrayDataset(val_dir,   transform=val_test_transform, class_to_idx=class_to_idx, strict=True)
@@ -142,28 +144,131 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
-    def freeze_bn(module):
-        if isinstance(module, torch.nn.BatchNorm2d):
+    def freeze_norms(module):
+        if isinstance(
+            module,
+            (
+                torch.nn.modules.batchnorm._BatchNorm,
+                torch.nn.InstanceNorm1d,
+                torch.nn.InstanceNorm2d,
+                torch.nn.InstanceNorm3d,
+                torch.nn.LayerNorm,
+                torch.nn.GroupNorm,
+            ),
+        ):
             module.eval()
 
-    def get_resnet(size):
-        if size == 50:
-            model = models.resnet50(pretrained=True)
-        elif size == 101:
-            model = models.resnet101(pretrained=True)
-        else:
-            raise ValueError("Unsupported ResNet size")
-        return model
+    def get_model(arch, model_name):
+        if arch == "resnet":
+            if model_name == "resnet50":
+                return models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+            if model_name == "resnet101":
+                return models.resnet101(weights=models.ResNet101_Weights.DEFAULT)
+            raise ValueError(f"Unsupported ResNet model_name '{model_name}'")
+        if arch == "densenet":
+            if model_name == "densenet121":
+                return models.densenet121(weights=models.DenseNet121_Weights.DEFAULT)
+            if model_name == "densenet169":
+                return models.densenet169(weights=models.DenseNet169_Weights.DEFAULT)
+            if model_name == "densenet201":
+                return models.densenet201(weights=models.DenseNet201_Weights.DEFAULT)
+            raise ValueError(f"Unsupported DenseNet model_name '{model_name}'")
+        if arch == "efficientnet":
+            if model_name in {
+                "efficientnet_b0",
+                "efficientnet_b1",
+                "efficientnet_b2",
+                "efficientnet_b3",
+                "efficientnet_b4",
+                "efficientnet_b5",
+                "efficientnet_b6",
+                "efficientnet_b7",
+            }:
+                weights_enum = getattr(models, f"{model_name.upper()}_Weights")
+                return getattr(models, model_name)(weights=weights_enum.DEFAULT)
+            raise ValueError(f"Unsupported EfficientNet model_name '{model_name}'")
+        if arch == "vit":
+            if model_name in {"vit_b_16", "vit_b_32", "vit_l_16", "vit_l_32", "vit_h_14"}:
+                weights_enum = getattr(models, f"{model_name.upper()}_Weights")
+                return getattr(models, model_name)(weights=weights_enum.DEFAULT)
+            raise ValueError(f"Unsupported ViT model_name '{model_name}'")
+        raise ValueError(f"Unsupported arch '{arch}'")
+
+    def replace_head(model, arch, num_classes):
+        if arch == "resnet":
+            model.fc = nn.Linear(model.fc.in_features, num_classes)
+            return model
+        if arch == "densenet":
+            model.classifier = nn.Linear(model.classifier.in_features, num_classes)
+            return model
+        if arch == "efficientnet":
+            model.classifier[1] = nn.Linear(model.classifier[1].in_features, num_classes)
+            return model
+        if arch == "vit":
+            model.heads.head = nn.Linear(model.heads.head.in_features, num_classes)
+            return model
+        raise ValueError(f"Unsupported arch '{arch}'")
+
+    def set_trainable_layers(model, arch, strategy):
+        if strategy == "full":
+            for param in model.parameters():
+                param.requires_grad = True
+            return
+
+        for param in model.parameters():
+            param.requires_grad = False
+
+        head_module = model.get_submodule(ARCH_FINAL_HEAD[arch])
+        for param in head_module.parameters(recurse=False):
+            param.requires_grad = True
+
+        if strategy == "frozen":
+            return
+
+        #partial fine-tuning - unfreeze last block + classifier
+        if arch == "resnet":
+            for param in model.layer4.parameters():
+                param.requires_grad = True
+            return
+        if arch == "densenet":
+            for param in model.features.denseblock4.parameters():
+                param.requires_grad = True
+            for param in model.features.norm5.parameters():
+                param.requires_grad = True
+            return
+        if arch == "efficientnet":
+            for param in model.features[-1].parameters():
+                param.requires_grad = True
+            return
+        if arch == "vit":
+            for param in model.encoder.layers[-1].parameters():
+                param.requires_grad = True
+            return
+
+        raise ValueError(f"Partial fine-tuning not supported for arch '{arch}'")
 
 
-    def build_optimizer(model, lr, weight_decay_backbone, weight_decay_head, use_adamw):
+    def build_optimizer(model, lr, weight_decay_backbone, weight_decay_head, use_adamw, head_module):
         decay_backbone, no_decay_backbone = [], []
         decay_head, no_decay_head = [], []
+        no_decay_param_ids = set()
+
+        # BatchNorm params should not have weight decay
+        for module in model.modules():
+            if isinstance(module, (torch.nn.BatchNorm2d, torch.nn.BatchNorm1d, torch.nn.BatchNorm3d)):
+                for param in module.parameters(recurse=False):
+                    no_decay_param_ids.add(id(param))
+
+        head = model.get_submodule(head_module)
+        head_param_ids = {id(param) for param in head.parameters(recurse=False)}
+        if not head_param_ids:
+            raise ValueError(f"No head params found for head_module='{head_module}'")
+
         for name, param in model.named_parameters():
             if not param.requires_grad:
                 continue
-            is_head = name.startswith("fc.")
-            is_no_decay = name.endswith(".bias") or "bn" in name.lower()
+            is_head = id(param) in head_param_ids
+            is_no_decay = name.endswith(".bias") or (id(param) in no_decay_param_ids)
             if is_head:
                 if is_no_decay:
                     no_decay_head.append(param)
@@ -198,19 +303,20 @@ def main():
             param_groups.append({"params": no_decay_head, "weight_decay": 0.0})
         return optim.Adam(param_groups, lr=lr)
 
-    def train_model(model, epochs,train_loader, validation_loader, optimizer, criterion):
+    def train_model(model, epochs,train_loader, validation_loader, optimizer, criterion, use_amp, freeze_norm_layer):
         num_epochs = epochs
         train_losses = []
         val_losses   = []
         train_accs   = []
         val_accs     = []
-        use_amp = device.type == "cuda"
         scaler = torch.amp.GradScaler(device.type, enabled=use_amp)
 
         for epoch in range(num_epochs):
             if epoch == 0:
                 epoch_start = time.perf_counter()
             model.train()
+            if freeze_norm_layer:
+                model.apply(freeze_norms)
             running_loss, correct, total = 0.0, 0, 0
 
             for images, labels in train_loader:
@@ -258,12 +364,11 @@ def main():
 
         return train_losses, train_accs, val_losses, val_accs
 
-    def eval_model(model, data_loader, criterion):
+    def eval_model(model, data_loader, criterion, use_amp):
         model.eval()
         all_labels = []
         all_preds  = []
         running_loss, total = 0.0, 0
-        use_amp = device.type == "cuda"
         with torch.no_grad():
             for images, labels in data_loader:
                 images, labels = images.to(device), labels.to(device)
@@ -290,29 +395,28 @@ def main():
         )
 
     print("FC Only Training - replace only final FC layer")
-    resnet = get_resnet(resnet_size)
-    resnet.fc = torch.nn.Linear(resnet.fc.in_features, num_classes)
-    resnet = resnet.to(device)
-    for param in resnet.parameters():
-        param.requires_grad = False
-
-    for param in resnet.fc.parameters():
-        param.requires_grad = True
-    #resnet.apply(freeze_bn)
+    model = get_model(cfg["arch"], model_name)
+    model = replace_head(model, cfg["arch"], num_classes)
+    model = model.to(device)
+    set_trainable_layers(model, cfg["arch"], "frozen")
+    #model.apply(freeze_bn)
 
     criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
     optimizer = build_optimizer(
-        resnet,
+        model,
         cfg["lr_frozen"],
         weight_decay_backbone,
         weight_decay_head,
         use_adamw,
+        ARCH_FINAL_HEAD[cfg["arch"]],
     )
 
+    use_amp = device.type == "cuda"
+
     train_losses_frozen, train_accs_frozen, val_losses_frozen, val_accs_frozen = train_model(
-        resnet, cfg["epochs_frozen"], train_loader, val_loader, optimizer, criterion)
+        model, cfg["epochs_frozen"], train_loader, val_loader, optimizer, criterion, use_amp, freeze_norm_layer)
     eval_labels_frozen, eval_preds_frozen, test_loss_frozen, test_acc_frozen = eval_model(
-        resnet, test_loader, criterion)
+        model, test_loader, criterion, use_amp)
     print(f"Test Accuracy (FC Only): {test_acc_frozen*100:.2f}% | Test Loss: {test_loss_frozen:.4f}")
     save_eval(output_dir, "fc_only", eval_labels_frozen, eval_preds_frozen, class_names)
     report_dict_frozen, report_text_frozen = write_classification_report(
@@ -334,24 +438,24 @@ def main():
 
 
     print("Full network fine tuning")
-    resnet = get_resnet(resnet_size)
-    resnet.fc = nn.Linear(resnet.fc.in_features, num_classes)
-    resnet = resnet.to(device)
-    for param in resnet.parameters():
-        param.requires_grad = True
+    model = get_model(cfg["arch"], model_name)
+    model = replace_head(model, cfg["arch"], num_classes)
+    model = model.to(device)
+    set_trainable_layers(model, cfg["arch"], "full")
 
     optimizer = build_optimizer(
-        resnet,
+        model,
         cfg["lr_full"],
         weight_decay_backbone,
         weight_decay_head,
         use_adamw,
+        ARCH_FINAL_HEAD[cfg["arch"]],
     )
 
     train_losses_full, train_accs_full, val_losses_full, val_accs_full = train_model(
-        resnet, cfg["epochs_full"], train_loader, val_loader, optimizer, criterion)
+        model, cfg["epochs_full"], train_loader, val_loader, optimizer, criterion, use_amp, freeze_norm_layer)
     eval_labels_full, eval_preds_full, test_loss_full, test_acc_full = eval_model(
-        resnet, test_loader, criterion)
+        model, test_loader, criterion, use_amp)
     print(f"Test Accuracy (Full fine tuning): {test_acc_full*100:.2f}% | Test Loss: {test_loss_full:.4f}")
     save_eval(output_dir, "full_finetuning", eval_labels_full, eval_preds_full, class_names)
     report_dict_full, report_text_full = write_classification_report(
@@ -371,35 +475,27 @@ def main():
     )
 
 
-    #partial fine tuning - unfreeze last two layers
+    #partial fine tuning - unfreeze last block + classifier
     print("Partial fine tuning - replace last layer and fully connected layer")
-    resnet = get_resnet(resnet_size)
-    resnet.fc = nn.Linear(resnet.fc.in_features, num_classes)
-    resnet = resnet.to(device)
-
-    for param in resnet.parameters():
-        param.requires_grad = False
-
-    for param in resnet.layer4.parameters():
-        param.requires_grad = True
-
-    for param in resnet.fc.parameters():
-        param.requires_grad = True
-
-    #resnet.apply(freeze_bn)
+    model = get_model(cfg["arch"], model_name)
+    model = replace_head(model, cfg["arch"], num_classes)
+    model = model.to(device)
+    set_trainable_layers(model, cfg["arch"], "partial")
+    #model.apply(freeze_bn)
 
     optimizer = build_optimizer(
-        resnet,
+        model,
         cfg["lr_partial"],
         weight_decay_backbone,
         weight_decay_head,
         use_adamw,
+        ARCH_FINAL_HEAD[cfg["arch"]],
     )
 
     train_losses_partial, train_accs_partial, val_losses_partial, val_accs_partial = train_model(
-        resnet, cfg["epochs_partial"], train_loader, val_loader, optimizer, criterion)
+        model, cfg["epochs_partial"], train_loader, val_loader, optimizer, criterion, use_amp, freeze_norm_layer)
     eval_labels_partial, eval_preds_partial, test_loss_partial, test_acc_partial = eval_model(
-        resnet, test_loader, criterion)
+        model, test_loader, criterion, use_amp)
     print(f"Test Accuracy (Partial fine tuning): {test_acc_partial*100:.2f}% | Test Loss: {test_loss_partial:.4f}")
     save_eval(output_dir, "partial_finetuning", eval_labels_partial, eval_preds_partial, class_names)
     report_dict_partial, report_text_partial = write_classification_report(
@@ -430,7 +526,38 @@ def main():
     final_val_acc   = [val_accs_frozen[-1], val_accs_full[-1], val_accs_partial[-1]]
     overfit_gap = [t - v for t, v in zip(final_train_acc, final_val_acc)]
 
-    compare_training_strategies(cfg_name, cfg, optimizer_name, weight_decay_backbone, weight_decay_head, timestamp, run_tag, run_name, output_dir, batch_size, num_workers, report_dict_frozen, report_dict_full, report_dict_partial, strategies, test_accuracies, test_losses, final_train_loss, final_val_loss, final_train_acc, final_val_acc, overfit_gap)
+    compare_training_strategies(
+        cfg_name,
+        cfg,
+        optimizer_name,
+        ARCH_FINAL_HEAD[cfg["arch"]],
+        weight_decay_backbone,
+        weight_decay_head,
+        timestamp,
+        run_tag,
+        run_name,
+        output_dir,
+        batch_size,
+        num_workers,
+        report_dict_frozen,
+        report_dict_full,
+        report_dict_partial,
+        strategies,
+        test_accuracies,
+        test_losses,
+        final_train_loss,
+        final_val_loss,
+        final_train_acc,
+        final_val_acc,
+        overfit_gap,
+    )
+
+def check_for_cuda(torch):
+    print("Cuda available: ", torch.cuda.is_available())
+    print("Device count: ", torch.cuda.device_count())
+    print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "no cuda")
+    print("torch.__version__:", torch.__version__)
+    print(torch.version.cuda)
 
 
 def get_training_run_name(args):

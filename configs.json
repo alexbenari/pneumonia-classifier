@@ -1,5 +1,6 @@
 {
   "default": {
+    "arch": "resnet",
     "model_name": "resnet50",
     "optimizer": "adamw",
     "weight_decay_backbone": 1e-5,
@@ -12,7 +13,8 @@
     "epochs_partial": 15,
     "batch_size": 32,
     "num_workers": 8,
-    "pin_memory": true
+    "pin_memory": true,
+    "freeze_norm_layer": false
   }
 
 }

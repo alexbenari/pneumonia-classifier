@@ -145,6 +145,7 @@ def compare_training_strategies(
     cfg_name,
     cfg,
     optimizer_name,
+    head_module,
     weight_decay_backbone,
     weight_decay_head,
     timestamp,
@@ -185,6 +186,8 @@ def compare_training_strategies(
         "run_tag": run_tag or None,
         "timestamp": timestamp,
         "optimizer": optimizer_name,
+        "arch": cfg.get("arch"),
+        "head_module": head_module,
         "weight_decay_backbone": weight_decay_backbone,
         "weight_decay_head": weight_decay_head,
         "lr_frozen": cfg["lr_frozen"],
@@ -195,6 +198,7 @@ def compare_training_strategies(
         "epochs_partial": cfg["epochs_partial"],
         "batch_size": batch_size,
         "num_workers": num_workers,
+        "freeze_norm_layer": cfg.get("freeze_norm_layer", False),
     }
     with open(summary_path, "w", encoding="utf-8") as f:
         f.write(summary_df.to_string(index=True))
