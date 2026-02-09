@@ -199,6 +199,7 @@ def compare_training_strategies(
         "batch_size": batch_size,
         "num_workers": num_workers,
         "freeze_norm_layer": cfg.get("freeze_norm_layer", False),
+        "seed": cfg.get("seed", 42),
     }
     with open(summary_path, "w", encoding="utf-8") as f:
         f.write(summary_df.to_string(index=True))

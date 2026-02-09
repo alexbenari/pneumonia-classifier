@@ -2,7 +2,7 @@
   "default": {
     "arch": "resnet",
     "model_name": "resnet50",
-    "optimizer": "adamw",
+    "optimizer": "adam",
     "weight_decay_backbone": 1e-5,
     "weight_decay_head": 1e-4,
     "lr_frozen": 1e-3,
@@ -14,7 +14,8 @@
     "batch_size": 32,
     "num_workers": 8,
     "pin_memory": true,
-    "freeze_norm_layer": false
+    "freeze_norm_layer": false,
+    "seed": 42
   }
 
 }

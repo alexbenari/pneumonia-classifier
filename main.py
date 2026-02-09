@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+import random
 from datetime import datetime
 import numpy as np
 
@@ -32,6 +33,15 @@ def main():
     args = parser.parse_args()
 
     cfg_name, cfg = get_run_hp_configuration(args)
+
+    seed = cfg.get("seed", 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    data_rng = torch.Generator()
+    data_rng.manual_seed(seed)
 
     optimizer_name = cfg["optimizer"]
     use_adamw = optimizer_name.lower() == "adamw"
@@ -94,6 +104,12 @@ def main():
     pin_memory = cfg.get("pin_memory", True)
     freeze_norm_layer = cfg.get("freeze_norm_layer", False)
 
+    def seed_worker(worker_id):
+        worker_seed = (seed + worker_id) % 2**32
+        np.random.seed(worker_seed)
+        random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
+
     train_dataset = ChestXrayDataset(train_dir, transform=train_transform, class_to_idx=class_to_idx, strict=True)
     val_dataset   = ChestXrayDataset(val_dir,   transform=val_test_transform, class_to_idx=class_to_idx, strict=True)
     test_dataset  = ChestXrayDataset(test_dir,  transform=val_test_transform, class_to_idx=class_to_idx, strict=True)
@@ -105,6 +121,8 @@ def main():
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=num_workers > 0,
+        worker_init_fn=seed_worker,
+        generator=data_rng,
     )
     val_loader = DataLoader(
         val_dataset,
