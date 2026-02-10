@@ -33,7 +33,7 @@ def main():
 
     check_for_cuda(torch)
 
-    base_dir = ".\\datasets"
+    base_dir = "datasets"
     train_dir = os.path.join(base_dir, "train")
     val_dir   = os.path.join(base_dir, "val")
     test_dir  = os.path.join(base_dir, "test")
