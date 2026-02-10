@@ -81,16 +81,22 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     print(f"=== Run: {run_name} ===")
 
-    train_transform = transforms.Compose([
+    rotation_degrees = cfg.get("rotation_degrees", 20)
+    enable_random_erasing = cfg.get("transform-random-erasing", False)
+    train_transforms = [
         #transforms.Resize((224, 224)),
         transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(10),
+        transforms.RandomRotation(rotation_degrees),
         transforms.RandomResizedCrop(224, scale=(0.9, 1.0)),  # zoom + shift approximation
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225]),
-        transforms.RandomErasing(p=0.10, scale=(0.01, 0.03), ratio=(0.3, 3.3), value=0),
-    ])
+    ]
+    if enable_random_erasing:
+        train_transforms.append(
+            transforms.RandomErasing(p=0.10, scale=(0.01, 0.03), ratio=(0.3, 3.3), value=0)
+        )
+    train_transform = transforms.Compose(train_transforms)
 
     val_test_transform = transforms.Compose([
         transforms.Resize((224, 224)),
