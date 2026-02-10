@@ -1,4 +1,0 @@
-              Strategy  Test Accuracy  Test Loss  Final Train Loss  Final Val Loss  Overfit Gap
-0              FC Only       0.862179   0.443927          0.156630        0.679158     0.126150
-1     Full Fine-Tuning       0.866987   0.510994          0.016516        0.169080     0.056557
-2  Partial Fine-Tuning       0.788462   0.962376          0.019452        0.158652     0.055598
