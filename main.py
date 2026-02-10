@@ -4,6 +4,7 @@ import os
 import re
 import random
 from datetime import datetime
+from functools import partial
 import numpy as np
 
 from torch.utils.data import DataLoader
@@ -11,6 +12,14 @@ from torchvision import transforms
 from sklearn.utils.class_weight import compute_class_weight
 #import warnings
 import time
+
+def seed_worker(worker_id, base_seed):
+    import torch
+    worker_seed = (base_seed + worker_id) % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
+
 
 def main():
     #warnings.filterwarnings('ignore')
@@ -110,11 +119,7 @@ def main():
     pin_memory = cfg.get("pin_memory", True)
     freeze_norm_layer = cfg.get("freeze_norm_layer", False)
 
-    def seed_worker(worker_id):
-        worker_seed = (seed + worker_id) % 2**32
-        np.random.seed(worker_seed)
-        random.seed(worker_seed)
-        torch.manual_seed(worker_seed)
+    worker_init_fn = partial(seed_worker, base_seed=seed) if num_workers > 0 else None
 
     train_dataset = ChestXrayDataset(train_dir, transform=train_transform, class_to_idx=class_to_idx, strict=True)
     val_dataset   = ChestXrayDataset(val_dir,   transform=val_test_transform, class_to_idx=class_to_idx, strict=True)
@@ -127,7 +132,7 @@ def main():
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=num_workers > 0,
-        worker_init_fn=seed_worker,
+        worker_init_fn=worker_init_fn,
         generator=data_rng,
     )
     val_loader = DataLoader(
