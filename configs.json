@@ -33,7 +33,7 @@
     "epochs_full": 15,
     "epochs_partial": 15,
     "batch_size": 32,
-    "num_workers": 8,
+    "num_workers": 2,
     "pin_memory": true,
     "freeze_norm_layer": false,
     "seed": 42
