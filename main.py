@@ -122,8 +122,8 @@ def main():
     worker_init_fn = partial(seed_worker, base_seed=seed) if num_workers > 0 else None
 
     train_dataset = ChestXrayDataset(train_dir, transform=train_transform, class_to_idx=class_to_idx, strict=True)
-    val_dataset   = ChestXrayDataset(val_dir,   transform=val_test_transform, class_to_idx=class_to_idx, strict=True)
     test_dataset  = ChestXrayDataset(test_dir,  transform=val_test_transform, class_to_idx=class_to_idx, strict=True)
+    val_dataset   = ChestXrayDataset(val_dir,   transform=val_test_transform, class_to_idx=class_to_idx, strict=True)
 
     train_loader = DataLoader(
         train_dataset,
@@ -135,16 +135,16 @@ def main():
         worker_init_fn=worker_init_fn,
         generator=data_rng,
     )
-    val_loader = DataLoader(
-        val_dataset,
+    test_loader = DataLoader(
+        test_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=num_workers > 0,
     )
-    test_loader = DataLoader(
-        test_dataset,
+    val_loader = DataLoader(
+        val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,

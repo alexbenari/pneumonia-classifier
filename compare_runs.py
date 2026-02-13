@@ -18,14 +18,19 @@ STRATEGIES = [
     ("Partial Fine-Tuning", "partial_finetuning"),
 ]
 
-METRIC_COLUMNS = [
+ACC_METRIC_COLUMNS = [
     "Train Accuracy",
-    "Train Loss",
-    "Test Accuracy",
-    "Test Loss",
     "Val Accuracy",
-    "Val Loss",
+    "Test Accuracy",
 ]
+
+LOSS_METRIC_COLUMNS = [
+    "Train Loss",
+    "Val Loss",
+    "Test Loss",
+]
+
+METRIC_COLUMNS = ACC_METRIC_COLUMNS + LOSS_METRIC_COLUMNS
 
 
 def parse_args():
@@ -213,40 +218,51 @@ def load_classification_report(summary_json, run_dir, strategy_name, strategy_id
     return None
 
 
+def get_class_metrics(report, class_name):
+    if not report:
+        return {}
+    for key, value in report.items():
+        if not isinstance(value, dict):
+            continue
+        if key.strip().lower() == class_name:
+            return value
+    return {}
+
+
+def get_class_recall(report, class_name):
+    metrics = get_class_metrics(report, class_name)
+    value = metrics.get("recall", np.nan)
+    return value if isinstance(value, (int, float, np.integer, np.floating)) else np.nan
+
+
+def get_class_f1(report, class_name):
+    metrics = get_class_metrics(report, class_name)
+    value = metrics.get("f1-score", np.nan)
+    return value if isinstance(value, (int, float, np.integer, np.floating)) else np.nan
+
+
 def build_recall_f1_table(report_a, report_b):
-    def class_labels(report):
+    def get_accuracy(report):
         if not report:
-            return []
-        labels = []
-        for key, value in report.items():
-            if key in ("macro avg", "weighted avg", "accuracy"):
-                continue
-            if isinstance(value, dict):
-                labels.append(key)
-        return labels
+            return np.nan
+        value = report.get("accuracy", np.nan)
+        return value if isinstance(value, (int, float, np.integer, np.floating)) else np.nan
 
-    labels = []
-    for label in class_labels(report_a):
-        if label not in labels:
-            labels.append(label)
-    for label in class_labels(report_b):
-        if label not in labels:
-            labels.append(label)
-
-    has_macro = (report_a and "macro avg" in report_a) or (report_b and "macro avg" in report_b)
-    has_weighted = (report_a and "weighted avg" in report_a) or (report_b and "weighted avg" in report_b)
-    if has_macro:
-        labels.append("macro avg")
-    if has_weighted:
-        labels.append("weighted avg")
+    class_rows = ["normal", "pneumonia"]
+    accuracy_a = get_accuracy(report_a)
+    accuracy_b = get_accuracy(report_b)
 
     rows = []
-    for label in labels:
-        row = {"Category": label}
-        row["Recall (A)"] = report_a.get(label, {}).get("recall", np.nan) if report_a else np.nan
-        row["Recall (B)"] = report_b.get(label, {}).get("recall", np.nan) if report_b else np.nan
-        row["F1 (A)"] = report_a.get(label, {}).get("f1-score", np.nan) if report_a else np.nan
-        row["F1 (B)"] = report_b.get(label, {}).get("f1-score", np.nan) if report_b else np.nan
+    for class_name in class_rows:
+        metrics_a = get_class_metrics(report_a, class_name)
+        metrics_b = get_class_metrics(report_b, class_name)
+        row = {"Category": class_name}
+        row["Recall (A)"] = metrics_a.get("recall", np.nan)
+        row["Recall (B)"] = metrics_b.get("recall", np.nan)
+        row["Accuracy (A)"] = accuracy_a
+        row["Accuracy (B)"] = accuracy_b
+        row["F1 (A)"] = metrics_a.get("f1-score", np.nan)
+        row["F1 (B)"] = metrics_b.get("f1-score", np.nan)
         rows.append(row)
 
     df = pd.DataFrame(rows).set_index("Category")
@@ -293,13 +309,44 @@ def plot_confusion(ax, labels, preds, class_names, title):
 
 
 def render_table_page(df, title):
+    def format_value(value):
+        if isinstance(value, (np.floating, float, np.integer, int)) and not isinstance(value, bool):
+            return f"{float(value):.3f}"
+        return value
+
+    def format_display_df(input_df):
+        display_df = input_df.copy()
+        header_map = {
+            "Train Accuracy (A)": "Train acc\n(A)",
+            "Train Accuracy (B)": "Train acc\n(B)",
+            "Val Accuracy (A)": "Val acc\n(A)",
+            "Val Accuracy (B)": "Val acc\n(B)",
+            "Test Accuracy (A)": "Test acc\n(A)",
+            "Test Accuracy (B)": "Test acc\n(B)",
+            "Test Recall (A)": "Test Recall\nPneu (A)",
+            "Test Recall (B)": "Test Recall\nPneu (B)",
+            "Test F1 (A)": "Test F1\nPneu (A)",
+            "Test F1 (B)": "Test F1\nPneu (B)",
+            "Train Loss (A)": "Train loss\n(A)",
+            "Train Loss (B)": "Train loss\n(B)",
+            "Val Loss (A)": "Val loss\n(A)",
+            "Val Loss (B)": "Val loss\n(B)",
+            "Test Loss (A)": "Test loss\n(A)",
+            "Test Loss (B)": "Test loss\n(B)",
+        }
+        display_df = display_df.rename(columns=header_map)
+        for col in display_df.columns:
+            display_df[col] = display_df[col].map(format_value)
+        return display_df
+
+    display_df = format_display_df(df)
     fig, ax = plt.subplots(figsize=(16, 4))
     ax.axis("off")
     ax.set_title(title, pad=12)
     table = ax.table(
-        cellText=df.values,
-        colLabels=df.columns,
-        rowLabels=df.index,
+        cellText=display_df.values,
+        colLabels=display_df.columns,
+        rowLabels=display_df.index,
         cellLoc="center",
         loc="center",
     )
@@ -309,13 +356,98 @@ def render_table_page(df, title):
     return fig
 
 
-def build_comparison_table(df_a, df_b):
+def render_strategy_comparison_page(main_df, loss_df, title):
+    def format_value(value):
+        if isinstance(value, (np.floating, float, np.integer, int)) and not isinstance(value, bool):
+            return f"{float(value):.3f}"
+        return value
+
+    def format_display_df(input_df):
+        display_df = input_df.copy()
+        header_map = {
+            "Train Accuracy (A)": "Train acc\n(A)",
+            "Train Accuracy (B)": "Train acc\n(B)",
+            "Val Accuracy (A)": "Val acc\n(A)",
+            "Val Accuracy (B)": "Val acc\n(B)",
+            "Test Accuracy (A)": "Test acc\n(A)",
+            "Test Accuracy (B)": "Test acc\n(B)",
+            "Test Recall (A)": "Test Recall\nPneu (A)",
+            "Test Recall (B)": "Test Recall\nPneu (B)",
+            "Test F1 (A)": "Test F1\nPneu (A)",
+            "Test F1 (B)": "Test F1\nPneu (B)",
+            "Train Loss (A)": "Train loss\n(A)",
+            "Train Loss (B)": "Train loss\n(B)",
+            "Val Loss (A)": "Val loss\n(A)",
+            "Val Loss (B)": "Val loss\n(B)",
+            "Test Loss (A)": "Test loss\n(A)",
+            "Test Loss (B)": "Test loss\n(B)",
+        }
+        display_df = display_df.rename(columns=header_map)
+        for col in display_df.columns:
+            display_df[col] = display_df[col].map(format_value)
+        return display_df
+
+    main_display = format_display_df(main_df)
+    loss_display = format_display_df(loss_df)
+
+    fig, axes = plt.subplots(2, 1, figsize=(16, 7), gridspec_kw={"height_ratios": [2.2, 1.0]})
+    fig.suptitle(title, fontsize=12)
+
+    axes[0].axis("off")
+    axes[0].set_title("Core Metrics", pad=8)
+    table_main = axes[0].table(
+        cellText=main_display.values,
+        colLabels=main_display.columns,
+        rowLabels=main_display.index,
+        cellLoc="center",
+        loc="center",
+    )
+    table_main.auto_set_font_size(False)
+    table_main.set_fontsize(8)
+    table_main.scale(1, 1.5)
+
+    axes[1].axis("off")
+    axes[1].set_title("Loss Metrics", pad=8)
+    table_loss = axes[1].table(
+        cellText=loss_display.values,
+        colLabels=loss_display.columns,
+        rowLabels=loss_display.index,
+        cellLoc="center",
+        loc="center",
+    )
+    table_loss.auto_set_font_size(False)
+    table_loss.set_fontsize(8)
+    table_loss.scale(1, 1.5)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    return fig
+
+
+def build_comparison_table(df_a, df_b, report_map_a, report_map_b):
     df_a = df_a.set_index("Strategy")
     df_b = df_b.set_index("Strategy")
     rows = []
     for strategy, _ in STRATEGIES:
         row = {"Strategy": strategy}
-        for metric in METRIC_COLUMNS:
+        for metric in ACC_METRIC_COLUMNS:
+            row[f"{metric} (A)"] = df_a.get(metric, pd.Series()).get(strategy, np.nan)
+            row[f"{metric} (B)"] = df_b.get(metric, pd.Series()).get(strategy, np.nan)
+        row["Test Recall (A)"] = get_class_recall(report_map_a.get(strategy), "pneumonia")
+        row["Test Recall (B)"] = get_class_recall(report_map_b.get(strategy), "pneumonia")
+        row["Test F1 (A)"] = get_class_f1(report_map_a.get(strategy), "pneumonia")
+        row["Test F1 (B)"] = get_class_f1(report_map_b.get(strategy), "pneumonia")
+        rows.append(row)
+    df = pd.DataFrame(rows).set_index("Strategy")
+    return df
+
+
+def build_loss_comparison_table(df_a, df_b):
+    df_a = df_a.set_index("Strategy")
+    df_b = df_b.set_index("Strategy")
+    rows = []
+    for strategy, _ in STRATEGIES:
+        row = {"Strategy": strategy}
+        for metric in LOSS_METRIC_COLUMNS:
             row[f"{metric} (A)"] = df_a.get(metric, pd.Series()).get(strategy, np.nan)
             row[f"{metric} (B)"] = df_b.get(metric, pd.Series()).get(strategy, np.nan)
         rows.append(row)
@@ -346,7 +478,7 @@ def build_best_only_table(df_a, df_b, best_a, best_b):
 
 def render_cm_pair(eval_a, eval_b, strategy_name):
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-    fig.suptitle(f"Confusion Matrices - {strategy_name}", fontsize=12)
+    fig.suptitle(f"Confusion matrices - {strategy_name} (test set)", fontsize=12)
 
     if eval_a is None:
         render_placeholder(axes[0], "NA\n(no eval data)")
@@ -385,11 +517,21 @@ def main():
     summary_b = read_summary_table(run_dir_b)
     summary_json_a = read_summary_json(run_dir_a)
     summary_json_b = read_summary_json(run_dir_b)
+    report_map_a = {}
+    report_map_b = {}
+    for strategy_name, strategy_id in STRATEGIES:
+        report_map_a[strategy_name] = load_classification_report(
+            summary_json_a, run_dir_a, strategy_name, strategy_id
+        )
+        report_map_b[strategy_name] = load_classification_report(
+            summary_json_b, run_dir_b, strategy_name, strategy_id
+        )
 
     best_a = select_best_strategy(summary_a)
     best_b = select_best_strategy(summary_b)
 
-    comparison = build_comparison_table(summary_a, summary_b)
+    comparison = build_comparison_table(summary_a, summary_b, report_map_a, report_map_b)
+    loss_comparison = build_loss_comparison_table(summary_a, summary_b)
     best_only = build_best_only_table(summary_a, summary_b, best_a, best_b)
 
     out_pdf = os.path.join(outputs_dir, f"compare_{run_a}__{run_b}.pdf")
@@ -416,7 +558,11 @@ def main():
         pdf.savefig(best_table_fig)
         plt.close(best_table_fig)
 
-        table_fig = render_table_page(comparison, "Strategy Comparison (Run A vs Run B)")
+        table_fig = render_strategy_comparison_page(
+            comparison,
+            loss_comparison,
+            "Strategy Comparison (Run A vs Run B)",
+        )
         pdf.savefig(table_fig)
         plt.close(table_fig)
 
@@ -433,7 +579,7 @@ def main():
         best_report_fig = render_report_comparison(
             report_a,
             report_b,
-            f"Recall/F1 - Best vs Best ({best_a} vs {best_b})",
+            f"Metrics - Best vs Best ({best_a} vs {best_b}) (test set)",
         )
         pdf.savefig(best_report_fig)
         plt.close(best_report_fig)
@@ -442,15 +588,15 @@ def main():
         for strategy_name, strategy_id in STRATEGIES:
             eval_a = load_eval(run_dir_a, strategy_id)
             eval_b = load_eval(run_dir_b, strategy_id)
-            report_a = load_classification_report(summary_json_a, run_dir_a, strategy_name, strategy_id)
-            report_b = load_classification_report(summary_json_b, run_dir_b, strategy_name, strategy_id)
+            report_a = report_map_a.get(strategy_name)
+            report_b = report_map_b.get(strategy_name)
             fig = render_cm_pair(eval_a, eval_b, strategy_name)
             pdf.savefig(fig)
             plt.close(fig)
             report_fig = render_report_comparison(
                 report_a,
                 report_b,
-                f"Recall/F1 - {strategy_name}",
+                f"Metrics - {strategy_name} (test set)",
             )
             pdf.savefig(report_fig)
             plt.close(report_fig)
