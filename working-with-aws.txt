@@ -1,0 +1,103 @@
+Below is a pragmatic, staged plan to move from local → EC2 → SageMaker, with minimal disruption and clean comparisons across runs. 
+
+  Phase 0: Prep
+
+  1. Package data for cloud: put your dataset on S3 in a simple, versioned layout (s3://.../train, val, test) so EC2 and SageMaker can read the same inputs.
+  2. Decide baseline: keep your current configs.json and default config as the baseline run you’ll compare everything against.
+  3. Decide reproducibility: set explicit seeds and store config + run params in outputs (you already do), so cross‑platform comparisons are fair.
+
+  Phase 1: EC2 “first success”
+
+  1. Pick a GPU instance size that matches ResNet50 training. For cost‑effective training, G5 (A10G) is a common choice; G4dn (T4) is the budget option; G6 (L4) is newer and good but more inference‑oriented.
+     (aws.amazon.com (https://aws.amazon.com/ec2/instance-types/accelerated-computing/?utm_source=openai))
+  2. Use a Deep Learning AMI to avoid driver/CUDA setup. It already includes NVIDIA drivers and common frameworks. (docs.aws.amazon.com (https://docs.aws.amazon.com/dlami/latest/devguide/gpu.html?
+     utm_source=openai))
+  3. Run your existing main.py on EC2, keeping outputs on EBS and optionally syncing to S3 after each run.
+  
+   Here’s the no-S3 first-boot flow:
+
+  # 1) Activate the prebuilt PyTorch venv
+  source /opt/pytorch/bin/activate
+
+  # 2) Quick CUDA + torch check
+  # 3) Verify NVIDIA driver
+  nvidia-smi
+
+  # 4) Clone your repo (includes dataset)
+mount the 116GB volume and clone there.
+  sudo mkdir -p /data
+  sudo mount /dev/nvme1n1 /data
+  echo '/dev/nvme1n1 /data ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
+  cd /data
+  git clone <your-repo-url>
+  
+  # 5) (Optional) install extra deps if needed
+  # pip install -r requirements.txt
+
+  # 6) Run your default config
+  python main.py --cfg default
+  
+  ssh -i "C:\dev\pneumonia.pem" ec2-user@3.122.248.160
+
+  Phase 2: SageMaker for sweep + comparability
+
+  1. Move the exact same training script into a SageMaker training entrypoint and read data from S3 (no code changes if you already accept paths/config).
+  2. Use SageMaker Training jobs for HP tuning and strategy comparison across architectures. If data loading becomes a bottleneck at scale, SageMaker supports heterogeneous clusters to offload CPU‑heavy data
+     tasks, but you can ignore that until you see a bottleneck. (docs.aws.amazon.com (https://docs.aws.amazon.com/sagemaker/latest/dg/train-heterogeneous-cluster.html?utm_source=openai))
+  3. Save all artifacts (metrics JSON, summary.txt, PDFs) to S3 per run so your compare tool can operate consistently across EC2/SageMaker outputs.
+
+  Phase 3: Architecture experiments
+
+  1. Keep ResNet50 as the baseline “control.”
+  2. Add arch sweeps (DenseNet/EfficientNet/ViT) with identical augmentations and optimizer settings for fair comparison.
+
+  Phase 4: Comparison workflow
+
+  1. For each run, keep the same output structure so compare_runs.py can work without changes.
+  2. Use “latest by config name” logic to compare two configs even if their timestamps differ (you already requested this).
+  
+  
+  EC2 g4dn First-Run Checklist
+
+  1. Launch instance
+
+  1. Instance type: g4dn.xlarge (1x T4, 4 vCPU, 16 GB RAM).
+  2. AMI: Deep Learning AMI (Ubuntu) or Deep Learning AMI (Amazon Linux) with PyTorch.
+  3. Storage: 100–200 GB EBS if you’ll cache dataset locally.
+  4. Security group: allow SSH (port 22) from your IP only.
+
+  2. Connect
+
+  ssh -i /path/to/key.pem ubuntu@<public-ip>
+
+  3. Verify GPU
+
+  nvidia-smi
+
+  4. Install repo + deps
+
+  git clone <your-repo-url>
+  cd pneumonia-classifier
+  python -m venv .venv
+  source .venv/bin/activate
+  pip install -r requirements.txt
+
+  5. Configure AWS CLI (for S3)
+
+  aws configure
+
+  (Access key, secret, region, output format)
+
+  6. Sync dataset from S3
+
+  aws s3 sync s3://YOUR_BUCKET/pneumonia/datasets ./datasets
+
+  7. Quick sanity check
+
+  python main.py --cfg default
+
+  (Confirm it finds CUDA, starts training, outputs to outputs/)
+
+  8. Optional: keep outputs in S3
+
+  aws s3 sync ./outputs s3://YOUR_BUCKET/pneumonia/outputs
