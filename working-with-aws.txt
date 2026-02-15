@@ -6,7 +6,10 @@ Below is a pragmatic, staged plan to move from local → EC2 → SageMaker, with
   2. Decide baseline: keep your current configs.json and default config as the baseline run you’ll compare everything against.
   3. Decide reproducibility: set explicit seeds and store config + run params in outputs (you already do), so cross‑platform comparisons are fair.
 
+
   Phase 1: EC2 “first success”
+
+ssh -i "C:\dev\pneumonia.pem" ec2-user@3.122.248.160
 
   1. Pick a GPU instance size that matches ResNet50 training. For cost‑effective training, G5 (A10G) is a common choice; G4dn (T4) is the budget option; G6 (L4) is newer and good but more inference‑oriented.
      (aws.amazon.com (https://aws.amazon.com/ec2/instance-types/accelerated-computing/?utm_source=openai))
@@ -29,6 +32,7 @@ mount the 116GB volume and clone there.
   sudo mount /dev/nvme1n1 /data
   echo '/dev/nvme1n1 /data ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab
   cd /data
+  sudo chown -R ec2-user:ec2-user /data
   git clone <your-repo-url>
   
   # 5) (Optional) install extra deps if needed
@@ -37,7 +41,9 @@ mount the 116GB volume and clone there.
   # 6) Run your default config
   python main.py --cfg default
   
-  ssh -i "C:\dev\pneumonia.pem" ec2-user@3.122.248.160
+ 
+  sync outputs: run wsl in powershell.
+  wsl rsync -avz --progress -e "ssh -i /mnt/c/dev/pneumonia.pem" ec2-user@18.192.8.183:/data/pneumonia-classifier/outputs/ /mnt/c/dev/pneumonia-classifier/outputs-aws/
 
   Phase 2: SageMaker for sweep + comparability
 

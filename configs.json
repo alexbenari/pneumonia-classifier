@@ -80,7 +80,7 @@
     "seed": 42
   },
 
-    "transform-apply-random-erasing": {
+    "transform-apply-random-erasing-adamw": {
     "arch": "resnet",
     "model_name": "resnet50",
     "optimizer": "adamw",
@@ -97,7 +97,7 @@
     "num_workers": 8,
     "pin_memory": true,
     "freeze_norm_layer": false,
-    "rotation_degrees": 10,
+    "rotation_degrees": 20,
     "seed": 42
   }
 
