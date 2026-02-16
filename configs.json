@@ -101,7 +101,7 @@
     "seed": 42
   },
 
-    "batch-64-same-lr-adamw": {
+    "batch-64-double-epochs-same-lr-adamw": {
     "arch": "resnet",
     "model_name": "resnet50",
     "optimizer": "adamw",
@@ -111,9 +111,9 @@
     "lr_frozen": 1e-3,
     "lr_full": 1e-4,
     "lr_partial": 1e-4,
-    "epochs_frozen": 10,
-    "epochs_full": 15,
-    "epochs_partial": 15,
+    "epochs_frozen": 20,
+    "epochs_full": 30,
+    "epochs_partial": 30,
     "batch_size": 64,
     "num_workers": 8,
     "pin_memory": true,
@@ -121,19 +121,19 @@
     "rotation_degrees": 20,
     "seed": 42
   },
-  "batch-64-same-lr-adamw-with-random-erase": {
+  "batch-64-double-epochs-double-lr-adamw": {
     "arch": "resnet",
     "model_name": "resnet50",
     "optimizer": "adamw",
     "weight_decay_backbone": 1e-5,
     "weight_decay_head": 1e-4,
-    "transform-random-erasing": true,
+    "transform-random-erasing": false,
     "lr_frozen": 1e-3,
-    "lr_full": 1e-4,
-    "lr_partial": 1e-4,
-    "epochs_frozen": 10,
-    "epochs_full": 15,
-    "epochs_partial": 15,
+    "lr_full": 2e-4,
+    "lr_partial": 2e-4,
+    "epochs_frozen": 20,
+    "epochs_full": 30,
+    "epochs_partial": 30,
     "batch_size": 64,
     "num_workers": 8,
     "pin_memory": true,
