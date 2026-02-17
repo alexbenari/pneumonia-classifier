@@ -181,6 +181,9 @@ def compare_training_strategies(
 
     summary_path = os.path.join(output_dir, "summary.txt")
     summary_json_path = os.path.join(output_dir, "summary.json")
+    lr_partial_backbone = cfg.get("lr_partial_backbone", cfg.get("lr_partial"))
+    lr_partial_head = cfg.get("lr_partial_head", cfg.get("lr_partial"))
+
     run_params = {
         "cfg_name": cfg_name,
         "run_tag": run_tag or None,
@@ -192,7 +195,8 @@ def compare_training_strategies(
         "weight_decay_head": weight_decay_head,
         "lr_frozen": cfg["lr_frozen"],
         "lr_full": cfg["lr_full"],
-        "lr_partial": cfg["lr_partial"],
+        "lr_partial_backbone": lr_partial_backbone,
+        "lr_partial_head": lr_partial_head,
         "epochs_frozen": cfg["epochs_frozen"],
         "epochs_full": cfg["epochs_full"],
         "epochs_partial": cfg["epochs_partial"],
@@ -253,3 +257,4 @@ def compare_training_strategies(
                 f"  Final Val Loss = {final_val_loss[i]:.4f}\n"
                 f"  Overfit Gap = {overfit_gap[i]:.4f}\n"
                 f"  Note: {note}\n")
+

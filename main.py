@@ -277,10 +277,21 @@ def main():
         raise ValueError(f"Partial fine-tuning not supported for arch '{arch}'")
 
 
-    def build_optimizer(model, lr, weight_decay_backbone, weight_decay_head, use_adamw, head_module):
+    def build_optimizer(
+        model,
+        lr,
+        weight_decay_backbone,
+        weight_decay_head,
+        use_adamw,
+        head_module,
+        lr_backbone=None,
+        lr_head=None,
+    ):
         decay_backbone, no_decay_backbone = [], []
         decay_head, no_decay_head = [], []
         no_decay_param_ids = set()
+        group_lr_backbone = lr if lr_backbone is None else lr_backbone
+        group_lr_head = lr if lr_head is None else lr_head
 
         # BatchNorm params should not have weight decay
         for module in model.modules():
@@ -312,24 +323,28 @@ def main():
         if use_adamw:
             param_groups = []
             if decay_backbone:
-                param_groups.append({"params": decay_backbone, "weight_decay": weight_decay_backbone})
+                param_groups.append(
+                    {"params": decay_backbone, "weight_decay": weight_decay_backbone, "lr": group_lr_backbone}
+                )
             if no_decay_backbone:
-                param_groups.append({"params": no_decay_backbone, "weight_decay": 0.0})
+                param_groups.append({"params": no_decay_backbone, "weight_decay": 0.0, "lr": group_lr_backbone})
             if decay_head:
-                param_groups.append({"params": decay_head, "weight_decay": weight_decay_head})
+                param_groups.append({"params": decay_head, "weight_decay": weight_decay_head, "lr": group_lr_head})
             if no_decay_head:
-                param_groups.append({"params": no_decay_head, "weight_decay": 0.0})
+                param_groups.append({"params": no_decay_head, "weight_decay": 0.0, "lr": group_lr_head})
             return optim.AdamW(param_groups, lr=lr)
 
         param_groups = []
         if decay_backbone:
-            param_groups.append({"params": decay_backbone, "weight_decay": weight_decay_backbone})
+            param_groups.append(
+                {"params": decay_backbone, "weight_decay": weight_decay_backbone, "lr": group_lr_backbone}
+            )
         if no_decay_backbone:
-            param_groups.append({"params": no_decay_backbone, "weight_decay": 0.0})
+            param_groups.append({"params": no_decay_backbone, "weight_decay": 0.0, "lr": group_lr_backbone})
         if decay_head:
-            param_groups.append({"params": decay_head, "weight_decay": weight_decay_head})
+            param_groups.append({"params": decay_head, "weight_decay": weight_decay_head, "lr": group_lr_head})
         if no_decay_head:
-            param_groups.append({"params": no_decay_head, "weight_decay": 0.0})
+            param_groups.append({"params": no_decay_head, "weight_decay": 0.0, "lr": group_lr_head})
         return optim.Adam(param_groups, lr=lr)
 
     def train_model(model, epochs,train_loader, validation_loader, optimizer, criterion, use_amp, freeze_norm_layer):
@@ -514,11 +529,13 @@ def main():
 
     optimizer = build_optimizer(
         model,
-        cfg["lr_partial"],
+        cfg["lr_partial_backbone"],
         weight_decay_backbone,
         weight_decay_head,
         use_adamw,
         ARCH_FINAL_HEAD[cfg["arch"]],
+        lr_backbone=cfg["lr_partial_backbone"],
+        lr_head=cfg["lr_partial_head"],
     )
 
     train_losses_partial, train_accs_partial, val_losses_partial, val_accs_partial = train_model(
@@ -602,6 +619,20 @@ def get_run_hp_configuration(args):
         raise ValueError(f"Config '{args.cfg}' not found in {config_path}")
     cfg_name = args.cfg
     cfg = all_cfgs[cfg_name]
+
+    # Backward compatibility: allow legacy lr_partial to seed both split partial LRs.
+    lr_partial = cfg.get("lr_partial")
+    if "lr_partial_backbone" not in cfg and lr_partial is not None:
+        cfg["lr_partial_backbone"] = lr_partial
+    if "lr_partial_head" not in cfg and lr_partial is not None:
+        cfg["lr_partial_head"] = lr_partial
+
+    if "lr_partial_backbone" not in cfg or "lr_partial_head" not in cfg:
+        raise ValueError(
+            "Config must define lr_partial_backbone and lr_partial_head, "
+            "or define legacy lr_partial for backward compatibility."
+        )
+
     return cfg_name,cfg
 
 def get_cli_arg_parser():
@@ -613,3 +644,4 @@ def get_cli_arg_parser():
 
 if __name__ == '__main__':
     main()
+
