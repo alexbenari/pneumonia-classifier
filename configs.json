@@ -147,6 +147,27 @@
     "freeze_norm_layer": false,
     "rotation_degrees": 20,
     "seed": 42
+  },
+
+    "densenet": {
+    "arch": "densenet",
+    "model_name": "densenet121",
+    "optimizer": "adamw",
+    "weight_decay_backbone": 1e-5,
+    "weight_decay_head": 1e-4,
+    "transform-random-erasing": false,
+    "lr_frozen": 1e-3,
+    "lr_full": 1e-4,
+    "lr_partial_backbone": 1e-4,
+    "lr_partial_head": 1e-4,
+    "epochs_frozen": 10,
+    "epochs_full": 15,
+    "epochs_partial": 15,
+    "batch_size": 32,
+    "num_workers": 4,
+    "pin_memory": true,
+    "freeze_norm_layer": false,
+    "seed": 42
   }
 
 }
