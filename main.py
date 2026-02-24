@@ -438,6 +438,9 @@ def main():
             strategy=strategy_id,
         )
 
+    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
+    use_amp = device.type == "cuda"
+    
     print("FC Only Training - replace only final FC layer")
     model = get_model(cfg["arch"], model_name)
     model = replace_head(model, cfg["arch"], num_classes)
@@ -445,7 +448,6 @@ def main():
     set_trainable_layers(model, cfg["arch"], "frozen")
     #model.apply(freeze_bn)
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights.to(device))
     optimizer = build_optimizer(
         model,
         cfg["lr_frozen"],
@@ -454,8 +456,6 @@ def main():
         use_adamw,
         ARCH_FINAL_HEAD[cfg["arch"]],
     )
-
-    use_amp = device.type == "cuda"
 
     train_losses_frozen, train_accs_frozen, val_losses_frozen, val_accs_frozen = train_model(
         model, cfg["epochs_frozen"], train_loader, val_loader, optimizer, criterion, use_amp, freeze_norm_layer)
@@ -517,6 +517,7 @@ def main():
         output_dir=output_dir,
         classification_report_text=report_text_full,
     )
+    
 
 
     #partial fine tuning - unfreeze last block + classifier
@@ -560,6 +561,7 @@ def main():
         classification_report_text=report_text_partial,
     )
 
+    '''
     #comparative analysis 
     strategies = ['FC Only', 'Full Fine-Tuning', 'Partial Fine-Tuning']
     test_accuracies = [test_acc_frozen, test_acc_full, test_acc_partial]
@@ -597,6 +599,7 @@ def main():
         final_val_acc,
         overfit_gap,
     )
+    '''
 
 def check_for_cuda(torch):
     print("Cuda available: ", torch.cuda.is_available())

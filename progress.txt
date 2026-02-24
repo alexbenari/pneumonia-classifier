@@ -1,7 +1,0 @@
-
-
-Things to try and change:
-
-- Replace Resnet with other networks: vision Transformer, VGG, DenseNet, EfficientNet
-- HP: batch size
-- Add augmentations

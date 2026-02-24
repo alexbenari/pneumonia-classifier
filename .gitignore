@@ -1,3 +1,6 @@
 outputs/
 outputs-aws/
+outputs-medgemma/
 __pycache__/
+models/*
+!models/*.json

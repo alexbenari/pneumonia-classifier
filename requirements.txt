@@ -6,3 +6,6 @@ scikit-learn
 matplotlib
 seaborn
 Pillow
+transformers
+accelerate
+bitsandbytes

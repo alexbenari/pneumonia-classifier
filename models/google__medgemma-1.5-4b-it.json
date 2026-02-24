@@ -1,0 +1,40 @@
+{
+  "model": {
+    "model_id": "google/medgemma-1.5-4b-it",
+    "hf_cache_dir": "models/hf-cache",
+    "device": "auto",
+    "dtype": "bfloat16",
+    "load_in_4bit": false,
+    "load_in_8bit": true,
+    "llm_int8_enable_fp32_cpu_offload": true,
+    "bnb_4bit_quant_type": "nf4",
+    "bnb_4bit_compute_dtype": "bfloat16",
+    "device_map": "auto",
+    "offload_folder": "models/offload"
+  },
+  "prompt": {
+    "prompt_id": "v1_strict",
+    "text": "You are given one chest X-ray image. Classify it into exactly one label from this set: normal, pneumonia. Output exactly one lowercase word: normal or pneumonia. Do not output any other text."
+  },
+  "decoding": {
+    "do_sample": false,
+    "num_beams": 1,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "max_new_tokens": 4
+  },
+  "inference": {
+    "mode": "label_scoring",
+    "score_reduction": "mean_logprob",
+    "label_prefix": "\n"
+  },
+  "parsing": {
+    "allowed_labels": ["normal", "pneumonia"],
+    "unparseable_policy": "exclude"
+  },
+  "io": {
+    "data_dir": "datasets",
+    "output_root": "outputs-medgemma"
+  },
+  "seed": 42
+}
