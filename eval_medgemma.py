@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+import time
 from datetime import datetime
 
 import matplotlib.pyplot as plt
@@ -45,6 +46,15 @@ def parse_args():
         default=None,
         help="Optional cap on number of samples for quick tests.",
     )
+    parser.add_argument(
+        "--image-path",
+        action="append",
+        default=None,
+        help=(
+            "Optional image path filter. Can be provided multiple times. "
+            "Only matching records from the selected split are evaluated."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -56,6 +66,34 @@ def model_id_to_config_path(model_id):
 def sanitize_tag(raw_tag):
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", (raw_tag or "").strip())
     return cleaned.strip("-_")
+
+
+def normalize_path_for_match(path):
+    return os.path.normcase(os.path.normpath(path))
+
+
+def filter_records_by_image_paths(records, image_paths):
+    if not image_paths:
+        return records
+
+    by_path = {normalize_path_for_match(row["image_path"]): row for row in records}
+    selected = []
+    missing = []
+    for raw_path in image_paths:
+        key = normalize_path_for_match(raw_path)
+        row = by_path.get(key)
+        if row is None:
+            missing.append(raw_path)
+            continue
+        selected.append(row)
+
+    if missing:
+        missing_block = "\n".join(f"- {item}" for item in missing)
+        raise ValueError(
+            "Some --image-path entries were not found in this split:\n"
+            f"{missing_block}"
+        )
+    return selected
 
 
 def load_model_config(model_id):
@@ -241,6 +279,42 @@ def build_label_token_map(processor, allowed_labels, label_prefix=""):
     return token_map
 
 
+def build_symbol_token_map(processor, allowed_labels, label_symbols, symbol_prefix=""):
+    tokenizer = getattr(processor, "tokenizer", None)
+    if tokenizer is None:
+        raise RuntimeError("Processor does not expose a tokenizer for symbol scoring.")
+
+    missing_labels = [label for label in allowed_labels if label not in label_symbols]
+    if missing_labels:
+        missing_text = ", ".join(missing_labels)
+        raise ValueError(
+            "inference.label_symbols is missing mappings for: "
+            f"{missing_text}"
+        )
+
+    token_map = {}
+    for label in allowed_labels:
+        symbol = str(label_symbols[label]).strip()
+        if not symbol:
+            raise ValueError(f"inference.label_symbols['{label}'] is empty.")
+        symbol_text = f"{symbol_prefix}{symbol}"
+        encoded = tokenizer(symbol_text, add_special_tokens=False, return_tensors="pt")
+        token_ids = encoded.get("input_ids")
+        if token_ids is None or token_ids.shape[-1] == 0:
+            raise RuntimeError(f"Failed to tokenize symbol '{symbol_text}'.")
+        if token_ids.shape[-1] != 1:
+            raise ValueError(
+                f"Symbol '{symbol_text}' for label '{label}' tokenizes to "
+                f"{int(token_ids.shape[-1])} tokens; expected exactly 1."
+            )
+        token_map[label] = {
+            "symbol": symbol,
+            "token_id": int(token_ids[0, 0].item()),
+            "symbol_text": symbol_text,
+        }
+    return token_map
+
+
 def score_candidate_label(model, prepared_inputs, prompt_length, candidate_ids, score_reduction):
     candidate_len = int(candidate_ids.shape[-1])
     full_inputs = {}
@@ -315,6 +389,44 @@ def classify_by_label_scoring(
 
     best_label = max(allowed_labels, key=lambda label: scores[label])
     return best_label, scores
+
+
+def classify_by_single_token_scoring(
+    model,
+    processor,
+    prompt_text,
+    image,
+    allowed_labels,
+    symbol_token_map,
+):
+    inputs, prompt_length = prepare_inputs(processor, prompt_text, image)
+    target_device = get_model_device(model)
+    prepared_inputs = {}
+    for key, value in inputs.items():
+        if torch.is_tensor(value):
+            prepared_inputs[key] = value.to(target_device)
+        else:
+            prepared_inputs[key] = value
+
+    with torch.inference_mode():
+        outputs = model(**prepared_inputs)
+
+    if not hasattr(outputs, "logits") or outputs.logits is None:
+        raise RuntimeError("Model output is missing logits for single-token scoring.")
+    if prompt_length <= 0:
+        raise RuntimeError("Prompt length must be > 0 for single-token scoring.")
+
+    next_token_logits = outputs.logits[:, prompt_length - 1, :]
+    next_token_logprobs = torch.log_softmax(next_token_logits, dim=-1)
+
+    scores = {}
+    for label in allowed_labels:
+        token_id = symbol_token_map[label]["token_id"]
+        scores[label] = float(next_token_logprobs[0, token_id].item())
+
+    best_label = max(allowed_labels, key=lambda label: scores[label])
+    raw_symbol = symbol_token_map[best_label]["symbol"]
+    return raw_symbol, best_label, scores
 
 
 def decode_label(model, processor, prompt_text, image, decoding_cfg):
@@ -404,19 +516,28 @@ def evaluate(args):
     io_cfg = config["io"]
     seed = int(config.get("seed", 42))
 
-    prompt_id, prompt_text = get_prompt_text(prompt_cfg)
+    prompt_id, prompt_text, prompt_path = get_prompt_text(prompt_cfg)
     allowed_labels = parsing_cfg.get("allowed_labels", ["normal", "pneumonia"])
     allowed_labels = [label.strip().lower() for label in allowed_labels]
+    response_to_label = parsing_cfg.get("response_to_label", {})
     unparseable_policy = parsing_cfg.get("unparseable_policy", "exclude")
     if unparseable_policy != "exclude":
         raise ValueError(
             "Only unparseable_policy='exclude' is supported in this baseline script."
         )
     inference_mode = inference_cfg.get("mode", "generation")
-    if inference_mode not in {"generation", "label_scoring"}:
-        raise ValueError("inference.mode must be one of: generation, label_scoring.")
+    if inference_mode not in {"generation", "label_scoring", "single_token_scoring"}:
+        raise ValueError(
+            "inference.mode must be one of: generation, label_scoring, single_token_scoring."
+        )
     score_reduction = inference_cfg.get("score_reduction", "mean_logprob")
     label_prefix = inference_cfg.get("label_prefix", "")
+    symbol_prefix = inference_cfg.get("symbol_prefix", "")
+    configured_label_symbols = inference_cfg.get("label_symbols", {})
+    label_symbols = {
+        str(label).strip().lower(): str(symbol).strip()
+        for label, symbol in configured_label_symbols.items()
+    }
 
     set_seed(seed)
 
@@ -446,6 +567,7 @@ def evaluate(args):
     print(f"Runtime device: {runtime_device} | dtype: {loaded_dtype}")
 
     records, class_counts = load_split_records(io_cfg.get("data_dir", "datasets"), args.split)
+    records = filter_records_by_image_paths(records, args.image_path)
     if args.max_samples is not None:
         records = records[: args.max_samples]
 
@@ -459,23 +581,38 @@ def evaluate(args):
     print(f"Inference mode: {inference_mode}")
 
     label_token_map = None
+    symbol_token_map = None
     if inference_mode == "label_scoring":
         label_token_map = build_label_token_map(
             processor=processor,
             allowed_labels=allowed_labels,
             label_prefix=label_prefix,
         )
+    if inference_mode == "single_token_scoring":
+        symbol_token_map = build_symbol_token_map(
+            processor=processor,
+            allowed_labels=allowed_labels,
+            label_symbols=label_symbols,
+            symbol_prefix=symbol_prefix,
+        )
 
     prediction_rows = []
     unparseable_rows = []
     y_true_eval = []
     y_pred_eval = []
+    inference_times_sec = []
+
+    torch_cuda_was_available = torch.cuda.is_available()
+    if torch_cuda_was_available:
+        torch.cuda.reset_peak_memory_stats()
 
     for idx, record in enumerate(records, start=1):
         image_path = record["image_path"]
         true_label = record["true_label"]
+        raw_symbol = None
         with Image.open(image_path) as raw_image:
             image = raw_image.convert("RGB")
+            inference_start = time.perf_counter()
             if inference_mode == "label_scoring":
                 raw_output, score_map = classify_by_label_scoring(
                     model=model,
@@ -486,6 +623,16 @@ def evaluate(args):
                     label_token_map=label_token_map,
                     score_reduction=score_reduction,
                 )
+            elif inference_mode == "single_token_scoring":
+                raw_symbol, parsed_label, score_map = classify_by_single_token_scoring(
+                    model=model,
+                    processor=processor,
+                    prompt_text=prompt_text,
+                    image=image,
+                    allowed_labels=allowed_labels,
+                    symbol_token_map=symbol_token_map,
+                )
+                raw_output = raw_symbol
             else:
                 raw_output = decode_label(
                     model=model,
@@ -495,16 +642,29 @@ def evaluate(args):
                     decoding_cfg=decoding_cfg,
                 )
                 score_map = {}
+                parsed_label = None
+            inference_elapsed_sec = time.perf_counter() - inference_start
 
-        parsed_label, _ = parse_label(raw_output, allowed_labels)
+        if inference_mode != "single_token_scoring":
+            parsed_label, normalized_output = parse_label(
+                raw_output,
+                allowed_labels,
+                response_to_label=response_to_label,
+            )
+        else:
+            normalized_output = raw_output
         is_parseable = parsed_label is not None
+        inference_times_sec.append(inference_elapsed_sec)
 
         row = {
             "image_path": image_path,
             "true_label": true_label,
             "raw_output": raw_output,
+            "normalized_output": normalized_output,
+            "raw_symbol": raw_symbol,
             "parsed_label": parsed_label,
             "is_parseable": is_parseable,
+            "inference_time_sec": inference_elapsed_sec,
         }
         for label in allowed_labels:
             row[f"score_{label}"] = score_map.get(label)
@@ -529,6 +689,30 @@ def evaluate(args):
     total_count = len(prediction_rows)
     unparseable_count = len(unparseable_rows)
     parseable_rate = (parseable_count / total_count) if total_count else 0.0
+    avg_inference_time_sec = (
+        float(np.mean(inference_times_sec)) if inference_times_sec else None
+    )
+    min_inference_time_sec = (
+        float(np.min(inference_times_sec)) if inference_times_sec else None
+    )
+    max_inference_time_sec = (
+        float(np.max(inference_times_sec)) if inference_times_sec else None
+    )
+    throughput_images_per_sec = (
+        (float(total_count) / float(np.sum(inference_times_sec)))
+        if inference_times_sec and float(np.sum(inference_times_sec)) > 0.0
+        else None
+    )
+    peak_gpu_memory_bytes = (
+        int(torch.cuda.max_memory_allocated())
+        if torch_cuda_was_available
+        else None
+    )
+    peak_gpu_memory_mb = (
+        float(peak_gpu_memory_bytes / (1024 * 1024))
+        if peak_gpu_memory_bytes is not None
+        else None
+    )
 
     if parseable_count:
         report_dict = classification_report(
@@ -606,6 +790,7 @@ def evaluate(args):
         },
         "prompt": {
             "prompt_id": prompt_id,
+            "path": prompt_path,
             "text": prompt_text,
         },
         "decoding": {
@@ -619,15 +804,36 @@ def evaluate(args):
             "mode": inference_mode,
             "score_reduction": score_reduction,
             "label_prefix": label_prefix,
+            "symbol_prefix": symbol_prefix,
+            "label_symbols": label_symbols if inference_mode == "single_token_scoring" else None,
+            "label_symbol_token_ids": (
+                {label: meta["token_id"] for label, meta in symbol_token_map.items()}
+                if symbol_token_map is not None
+                else None
+            ),
         },
         "dataset": {
             "data_dir": io_cfg.get("data_dir", "datasets"),
             "total_samples": total_count,
             "class_counts": class_counts,
             "max_samples": args.max_samples,
+            "image_paths_filter": args.image_path or [],
+        },
+        "timing": {
+            "avg_inference_time_sec": avg_inference_time_sec,
+            "min_inference_time_sec": min_inference_time_sec,
+            "max_inference_time_sec": max_inference_time_sec,
+            "throughput_images_per_sec": throughput_images_per_sec,
+        },
+        "runtime": {
+            "torch_cuda_is_available": torch_cuda_was_available,
+            "model_primary_device": str(get_model_device(model)),
+            "peak_gpu_memory_bytes": peak_gpu_memory_bytes,
+            "peak_gpu_memory_mb": peak_gpu_memory_mb,
         },
         "parsing": {
             "allowed_labels": allowed_labels,
+            "response_to_label": response_to_label,
             "parseable_count": parseable_count,
             "unparseable_count": unparseable_count,
             "parseable_rate": parseable_rate,

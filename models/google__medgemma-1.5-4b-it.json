@@ -13,23 +13,34 @@
     "offload_folder": "models/offload"
   },
   "prompt": {
-    "prompt_id": "v1_strict",
-    "text": "You are given one chest X-ray image. Classify it into exactly one label from this set: normal, pneumonia. Output exactly one lowercase word: normal or pneumonia. Do not output any other text."
+    "prompt_id": "yesno_v1",
+    "path": "prompts/medgemma_yesno_v1.md"
   },
   "decoding": {
     "do_sample": false,
     "num_beams": 1,
     "temperature": 0.0,
     "top_p": 1.0,
-    "max_new_tokens": 4
+    "max_new_tokens": 3
   },
   "inference": {
-    "mode": "label_scoring",
+    "mode": "generation",
     "score_reduction": "mean_logprob",
-    "label_prefix": "\n"
+    "label_prefix": "\n",
+    "symbol_prefix": "",
+    "label_symbols": {
+      "normal": "A",
+      "pneumonia": "B"
+    }
   },
   "parsing": {
     "allowed_labels": ["normal", "pneumonia"],
+    "response_to_label": {
+      "yes": "pneumonia",
+      "no": "normal",
+      "y": "pneumonia",
+      "n": "normal"
+    },
     "unparseable_policy": "exclude"
   },
   "io": {
